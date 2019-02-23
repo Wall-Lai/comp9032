@@ -1,0 +1,476 @@
+
+; Created: 2018/10/19 16:38:16
+; Author : Z5189667 Zihan,Lai
+
+
+
+ .include "m2560def.inc"
+
+ ; ----------Initialize LCD----------
+.equ LCD_RS = 7
+.equ LCD_E = 6
+.equ LCD_RW = 5
+.equ LCD_BE = 4
+
+; ----------Three registers for temporary value----------
+.def temp1    =r16		
+.def temp2    =r17		
+.def temp3	  =r18
+
+ ; ----------Initialize Keypad----------
+.def row    =r19		; current row number
+.def col    =r20		; current column number
+.def rmask  =r21		; mask for current row
+.def cmask	=r22		; mask for current column
+
+;----------Define other registers----------
+.def stage_flag		=r23	; Control stages
+.def score			=r24	; Store score
+.def ball			=r25	; Store the location of ball
+
+.equ PORTLDIR =0xF0			; use PortL for input/output from keypad: PL7-4, output, PL3-0, input
+.equ INITCOLMASK = 0xEF		; scan from the leftmost column, the value to mask output
+.equ INITROWMASK = 0x01		; scan from the bottom row
+.equ ROWMASK  =0x0F			; low four bits are output from the keypad. This value mask the high 4 bits.
+
+
+.cseg 
+.org 0 
+		rjmp RESET 
+.org	INT0addr
+		rjmp EXT_INT0
+
+;--------LCD macro------Define before RESET
+.macro do_lcd_command
+	ldi r16, @0
+	rcall lcd_command
+	rcall lcd_wait
+.endmacro
+
+.macro do_lcd_data
+	ldi r16, @0
+	rcall lcd_data
+	rcall lcd_wait
+.endmacro
+
+.macro do_lcd_data_reg
+	mov r16, temp2
+	rcall lcd_data
+	rcall lcd_wait
+.endmacro
+
+.macro lcd_set
+	sbi PORTA, @0
+.endmacro
+.macro lcd_clr
+	cbi PORTA, @0
+.endmacro
+
+;----------display dimmed light----------
+dimmed_light:
+	ldi	temp3, 0b00000111
+	out PORTC, temp3
+	rcall sleep_1ms
+	ldi	temp3, 0b00000000
+	out PORTC, temp3
+	rcall sleep_5ms
+    ret
+
+
+RESET:
+ ; ----------Initialize LCD---------- Use PortF to show LCD data, PortA to control LCD
+	ldi r16, low(RAMEND)
+	out SPL, r16
+	ldi r16, high(RAMEND)
+	out SPH, r16
+
+	ser r16
+	out DDRF, r16
+	out DDRA, r16
+	out DDRE, r16
+	clr r16
+	out PORTF, r16
+	out PORTA, r16
+	out PORTE, r16
+
+	do_lcd_command 0b00111000 ; 2x5x7
+	rcall sleep_5ms
+	do_lcd_command 0b00111000 ; 2x5x7
+	rcall sleep_1ms
+	do_lcd_command 0b00111000 ; 2x5x7
+	do_lcd_command 0b00111000 ; 2x5x7
+	do_lcd_command 0b00001000 ; display off
+	do_lcd_command 0b00000001 ; clear display
+	do_lcd_command 0b00000110 ; increment, no display shift
+	do_lcd_command 0b00001110 ; Cursor on, bar, no blink
+
+ ; ----------Initialize Keypad---------- Use PortL for Keypad
+	ldi temp1, PORTLDIR			; columns are outputs, rows are inputs
+	sts	DDRL, temp1
+
+; ----------Initialize LED---------- Use PortC for Keypad
+	ser temp1					; PORTC is outputs
+	out DDRC, temp1				
+	out PORTC, temp1
+
+; ----------Initialize Interupt0----------
+	sei			; enable Global Interrupt
+	ldi temp1, (0 << ISC00)	; set INT0 as falling edge triggered interrupt
+	sts EICRA, temp1
+
+	in temp1, EIMSK		; enable INT0
+	ori temp1, (1<<INT0)
+	out EIMSK, temp1
+
+;----------Stage 1----------
+	do_lcd_data 'R'				;Display 'Ready...' on LCD
+	do_lcd_data 'e'
+	do_lcd_data 'a'
+	do_lcd_data 'd'
+	do_lcd_data 'y'
+	do_lcd_data '.'
+	do_lcd_data '.'
+	do_lcd_data '.'
+
+	ldi temp1, 0b00000001
+	out PORTC, temp1
+	clr stage_flag			;Initialize registers
+	ldi ball, 1
+	ldi	score, 0
+	jmp main
+
+EXT_INT0:					; this interrupt is used to change the status of this game
+
+		cpi stage_flag, 0		;	stage_flag has three values, 0 means reset stage, 1 means stage2, 2 means stage3
+		brne status_start
+		inc stage_flag
+		rjmp status_end
+	status_start:
+		cpi stage_flag, 1
+		brne status_stop
+		inc stage_flag
+		rjmp status_end
+	status_stop:
+		dec stage_flag
+
+	status_end:
+		rcall dimmed_light
+		jmp main
+		
+;----------Stage 2----------	
+
+stage2:
+	rcall sleep_100ms		; debouncing
+	rcall sleep_100ms
+	rcall sleep_100ms
+	do_lcd_command 0b00000001 ; clear display
+	do_lcd_command 0b00000110 ; increment, no display shift
+	do_lcd_command 0b00001110 ; Cursor on, bar, no blink
+	do_lcd_data 'S'			  ;Display 'Start...' on LCD
+	do_lcd_data 't'
+	do_lcd_data 'a'
+	do_lcd_data 'r'
+	do_lcd_data 't'
+	do_lcd_data '.'
+	do_lcd_data '.'
+	do_lcd_data '.'
+	ser temp1				;Motor spins
+	out PORTE, temp1
+	cpi stage_flag, 2
+	breq end_stage2
+	sei
+
+shift_ball:					;Put the ball in cups randomly
+	ldi	ball, 1				;Use ball to store the ball's location
+	rcall dimmed_light
+	ldi ball, 2
+	rcall dimmed_light
+	ldi ball, 4
+	rcall dimmed_light
+	rjmp shift_ball
+end_stage2:
+	jmp main
+
+stage3:
+	clr	temp1				;Stop motor
+	out PORTE, temp1
+	rcall main_keypad	;Wating for the input of kaypad
+	out	PORTC, ball		;display the location of ball
+	cp	temp1, ball
+	brne wrong_guess	;If input and ball is not the same, means guess is wrong, otherwise, guess is right
+right_guess:				; Display on LCD
+	inc	score				
+		
+	do_lcd_command 0b00000001 ; clear display
+	do_lcd_command 0b00000110 ; increment, no display shift
+	do_lcd_command 0b00001110 ; Cursor on, bar, no blink
+	do_lcd_data	'S'
+	do_lcd_data	'c'
+	do_lcd_data	'o'
+	do_lcd_data	'r'
+	do_lcd_data	'e'
+	do_lcd_data	':'
+	do_lcd_data	' '
+	clr temp2
+	mov	temp2,	score
+	subi temp2,	-'0'			;Change score to ascii value
+	do_lcd_data_reg				;display score on LCD
+
+	ldi temp3, 0b11110000		;LCD flash three times shows guess is correct
+	add temp3, ball
+	out PORTC, temp3
+	rcall sleep_100ms
+	rcall sleep_100ms
+	out PORTC, ball
+	rcall sleep_100ms
+	rcall sleep_100ms
+	out PORTC, temp3
+	rcall sleep_100ms
+	rcall sleep_100ms
+	out PORTC, ball
+	rcall sleep_100ms
+	rcall sleep_100ms
+	out PORTC, temp3
+	rcall sleep_100ms
+	rcall sleep_100ms
+	out PORTC, ball
+	sei
+	jmp stage3_loop
+
+wrong_guess:		; Display on LCD
+	dec score
+	cpi score, 1	; If score is 0, game over and reset
+	brsh above_one
+	jmp game_over
+above_one:
+	do_lcd_command 0b00000001 ; clear display
+	do_lcd_command 0b00000110 ; increment, no display shift
+	do_lcd_command 0b00001110 ; Cursor on, bar, no blink
+	do_lcd_data	'S'
+	do_lcd_data	'c'
+	do_lcd_data	'o'
+	do_lcd_data	'r'
+	do_lcd_data	'e'
+	do_lcd_data	':'
+	do_lcd_data	' '
+	clr temp2
+	mov	temp2,	score		;Change score to ascii value
+	subi temp2,	-'0'		
+	do_lcd_data_reg			;display score on LCD
+	sei
+stage3_loop:				;Waiting in stage3 if no more push
+	rjmp stage3_loop	
+
+	reti
+
+game_over:					  ; Score is less than 1 and reset
+	do_lcd_command 0b00000001 ; clear display
+	do_lcd_command 0b00000110 ; increment, no display shift
+	do_lcd_command 0b00001110 ; Cursor on, bar, no blink
+	do_lcd_data	'G'
+	do_lcd_data	'A'
+	do_lcd_data	'M'
+	do_lcd_data	'E'
+	do_lcd_data	' '
+	do_lcd_data	'O'
+	do_lcd_data	'V'
+	do_lcd_data	'E'
+	do_lcd_data	'R'
+	do_lcd_data	'!'
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+	rcall sleep_100ms
+jmp	RESET
+
+
+main:								; Check which stage is now
+		cpi stage_flag, 1
+		brne stage_flag_not_one
+		jmp stage2
+stage_flag_not_one:
+		cpi stage_flag, 2
+		brne stage_flag_not_two
+		jmp stage3
+stage_flag_not_two:
+		rjmp main 
+
+; ----------LCD function----------
+lcd_command:
+	out PORTF, r16
+	nop
+	lcd_set LCD_E
+	nop
+	nop
+	nop
+	lcd_clr LCD_E
+	nop
+	nop
+	nop
+	ret
+
+lcd_data:
+	out PORTF, r16
+	lcd_set LCD_RS
+	nop
+	nop
+	nop
+	lcd_set LCD_E
+	nop
+	nop
+	nop
+	lcd_clr LCD_E
+	nop
+	nop
+	nop
+	lcd_clr LCD_RS
+	ret
+
+lcd_wait:
+	push r16
+	clr r16
+	out DDRF, r16
+	out PORTF, r16
+	lcd_set LCD_RW
+lcd_wait_loop:
+	nop
+	lcd_set LCD_E
+	nop
+	nop
+    nop
+	in r16, PINF
+	lcd_clr LCD_E
+	sbrc r16, 7
+	rjmp lcd_wait_loop
+	lcd_clr LCD_RW
+	ser r16
+	out DDRF, r16
+	pop r16
+	ret
+
+;----------Keypad function----------
+main_keypad:
+	rcall dimmed_light
+	ldi cmask, INITCOLMASK		; initial column mask
+	clr	col						; initial column
+colloop:
+	cpi col, 4
+	breq main_keypad
+	sts	PORTL, cmask				; set column to mask value (one column off)
+	ldi temp1, 0xFF
+
+delay:
+	dec temp1
+	brne delay
+
+	lds	temp1, PINL				; read PORTD
+	andi temp1, ROWMASK
+	cpi temp1, 0xF				; check if any rows are on
+	breq nextcol
+								; if yes, find which row is on
+	ldi rmask, INITROWMASK		; initialise row check
+	clr	row						; initial row
+rowloop:
+	cpi row, 4
+	breq nextcol
+	mov temp2, temp1
+	and temp2, rmask				; check masked bit
+	breq convert 				; if bit is clear, convert the bitcode
+	inc row						; else move to the next row
+	lsl rmask					; shift the mask to the next bit
+	jmp rowloop
+
+nextcol:
+	lsl cmask					; else get new mask by shifting and 
+	inc col						; increment column value
+	jmp colloop					; and check the next column
+
+convert:
+	cpi col, 3					; if column is 3 we have a letter
+	breq letters				
+	cpi row, 3					; if row is 3 we have a symbol or 0
+	breq symbols
+
+	mov temp1, row				; otherwise we have a number in 1-9
+	lsl temp1
+	add temp1, row				; temp1 = row * 3
+	add temp1, col				; add the column address to get the value
+	subi temp1, -1			; add the value of character '0'
+	jmp convert_end
+
+letters:
+	ldi temp1, 'A'
+	add temp1, row				; increment the character 'A' by the row value
+	jmp invalid_input
+
+symbols:
+	cpi col, 0					; check if we have a star
+	breq star
+	cpi col, 1					; or if we have zero
+	breq zero					
+	ldi temp1, '#'				; if not we have hash
+	jmp invalid_input
+star:
+	ldi temp1, '*'				; set to star
+	jmp invalid_input
+zero:
+	ldi temp1, '0'				; set to zero
+	jmp invalid_input
+
+invalid_input:					; The inpout is not 1, 2, or 3 back and wait valid input
+	jmp main_keypad
+
+convert_end:
+	cpi temp1, 4
+	brsh invalid_input			; restart keypad loop
+	ret					
+
+
+
+
+
+
+
+
+;----------Delay----------
+.equ F_CPU = 16000000
+.equ DELAY_1MS = F_CPU / 4 / 1000 - 4
+; 4 cycles per iteration - setup/call-return overhead
+
+sleep_1ms:
+	push r26
+	push r27
+	ldi r27, high(DELAY_1MS)
+	ldi r26, low(DELAY_1MS)
+delayloop_1ms:
+	sbiw r27:r26, 1
+	brne delayloop_1ms
+	pop r27
+	pop r26
+	ret
+
+sleep_5ms:
+	rcall sleep_1ms
+	rcall sleep_1ms
+	rcall sleep_1ms
+	rcall sleep_1ms
+	rcall sleep_1ms
+	ret
+
+sleep_100ms:
+		push temp1
+		ldi temp1, 20
+	display_loop_100:
+		dec temp1
+		breq display_end_100
+		rcall sleep_5ms
+		rjmp display_loop_100
+	display_end_100:
+		pop temp1
+		ret
